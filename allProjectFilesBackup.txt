@@ -1,0 +1,2126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>ASCII Game</title>
+  <link rel="stylesheet" href="public/style.css" />
+  <style>
+    #devConsole {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 300px;
+      font-size: 16px;
+      font-family: monospace;
+      padding: 4px 8px;
+      background: black;
+      color: lime;
+      border: 1px solid lime;
+      display: none;
+      z-index: 9999;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="asciiCanvas" width="1000" height="800"></canvas>
+  <input id="devConsole" type="text" autocomplete="off" />
+  <script type="module" src="assets/main.js"></script>
+</body>
+</html>
+import MapArea from "./maps/MapArea.js";
+import Player from "./entities/Player.js";
+import NPC from "./entities/NPC.js";
+import InputHandler from "./utils/InputHandler.js";
+import GameCamera from "./utils/GameCamera.js";
+import { drawHUD, setPlayerStatus } from "./utils/HUDOverlay.js";
+import { drawInventory } from "./utils/InventoryRenderer.js";
+import { drawHoverText } from "./utils/HoverInspector.js";
+import { drawErrorMessage } from "./utils/ErrorMessageOverlay.js";
+import TileTypes from "./constants/TileTypes.js";
+import { bindGlobalEvents } from "./utils/eventBindings.js";
+import { ensureConsoleExists } from "./utils/consoleManager.js";
+import { gameLoop } from "./utils/gameLoop.js";
+import generateArea_Z99 from "./maps/area_Z99.js";
+const canvas = document.getElementById("asciiCanvas");
+const ctx = canvas.getContext("2d");
+const baseTileSize = 20;
+const cols = 80;
+const rows = 60;
+canvas.width = cols * baseTileSize;
+canvas.height = rows * baseTileSize;
+const camera = new GameCamera(
+  Math.floor(canvas.width / baseTileSize),
+  Math.floor(canvas.height / baseTileSize),
+  cols,
+  rows
+);
+camera.zoom = 1;
+const map = new MapArea(cols, rows);
+generateArea_Z99(map);
+let currentAreaID = "z99";
+const player = new Player(Math.floor(cols / 2), Math.floor(rows / 2));
+player.inventory = {};
+const input = new InputHandler();
+const timedDrops = [];
+const activeNPCs = [
+  new NPC(32, 12, "enemy", "!", "#f00", 5),
+  new NPC(35, 14, "enemy", "!", "#f00", 5),
+  new NPC(25, 15, "villager", "v", "#fff", 3)
+];
+// ? Ensure dev console is always present
+ensureConsoleExists();
+// ?? Bind events
+bindGlobalEvents(canvas, camera, map, player, baseTileSize, activeNPCs, (id) => {
+  currentAreaID = id;
+});
+// ?? Start game loop
+gameLoop({
+  ctx,
+  canvas,
+  camera,
+  player,
+  input,
+  cols,
+  rows,
+  baseTileSize,
+  map,
+  activeNPCs,
+  timedDrops,
+  currentAreaID,
+  drawHUD,
+  drawHoverText,
+  drawInventory,
+  drawErrorMessage,
+  TileTypes
+});
+// TileTypes.js - Updated: ENEMY tile now walkable for damage & interaction
+import Tile from "../tiles/Tile.js";
+const TileTypes = {
+  GRASS: () => new Tile('"', "#0f0", "grass", { isWalkable: true }),
+  PATH: () => new Tile(".", "#d2b48c", "path", { isWalkable: true }),
+  RIVER: () => new Tile("~", "#00f", "river", { isWalkable: false }),
+  WALL: () => new Tile("#", "#aaa", "wall", { isWalkable: false }),
+  FLOOR: () => new Tile(".", "#b87333", "floor", { isWalkable: true }),
+  DOOR: () => new Tile("+", "#b5651d", "door", { isDoor: true, locked: true, isWalkable: false }),
+  UNLOCKED_DOOR: () => new Tile("+", "#b5651d", "door", { isDoor: true, locked: false, isWalkable: true }),
+  NPC: () => new Tile("?", "#fff", "npc", { isWalkable: false }),
+  KEY: () => new Tile("k", "#ff0", "key", { isWalkable: true }),
+  RUPEE: () => new Tile("?", "#0ff", "rupee", { isWalkable: true }),
+  HEART: () => new Tile("?", "#f00", "heart", { isWalkable: true }),
+  ENEMY: () => new Tile("!", "#f00", "enemy", { isWalkable: true })  // Now allows clipping
+};
+export default TileTypes;
+import TileTypes from "../constants/TileTypes.js";
+import { setPlayerStatus } from "../utils/HUDOverlay.js";
+export default class NPC {
+  constructor(x, y, type = "villager", symbol = "!", color = "#fff", range = 0) {
+    this.x = x;
+    this.y = y;
+    this.type = type;
+    this.symbol = symbol;
+    this.color = color;
+    this.range = range;
+    this.cooldown = 0;
+    this.pauseTimer = 0;
+    this.lastDamage = 0;
+  }
+  update(player, map) {
+    const dx = player.x - this.x;
+    const dy = player.y - this.y;
+    const distSq = dx * dx + dy * dy;
+    const detectionRadius = 3;
+    if (this.cooldown > 0) {
+      this.cooldown--;
+      return;
+    }
+    if (this.type === "enemy") {
+      if (distSq <= detectionRadius * detectionRadius) {
+        this.moveToward(player.x, player.y, map);
+      } else {
+        this.wander(map);
+      }
+      if (dx === 0 && dy === 0) {
+        const now = Date.now();
+        if (now - this.lastDamage > 2000 && playerStatus.health > 0) {
+          playerStatus.health--;
+          setPlayerStatus({ health: playerStatus.health });
+          this.lastDamage = now;
+        }
+      }
+    }
+    this.cooldown = 10;
+  }
+  moveToward(targetX, targetY, map) {
+    const dx = targetX - this.x;
+    const dy = targetY - this.y;
+    const stepX = Math.sign(dx);
+    const stepY = Math.sign(dy);
+    const directions = [
+      { x: this.x + stepX, y: this.y + stepY },
+      { x: this.x + stepX, y: this.y },
+      { x: this.x, y: this.y + stepY }
+    ];
+    for (const pos of directions) {
+      if (!map.inBounds(pos.x, pos.y)) continue;
+      const tile = map.getTile(pos.x, pos.y);
+      if (tile?.isWalkable && tile.type !== "player") {
+        this.x = pos.x;
+        this.y = pos.y;
+        break;
+      }
+    }
+  }
+  wander(map) {
+    if (this.pauseTimer > 0) {
+      this.pauseTimer--;
+      return;
+    }
+    const dirs = [
+      { dx: 1, dy: 0 }, { dx: -1, dy: 0 },
+      { dx: 0, dy: 1 }, { dx: 0, dy: -1 },
+      { dx: 1, dy: 1 }, { dx: -1, dy: -1 },
+      { dx: 1, dy: -1 }, { dx: -1, dy: 1 }
+    ];
+    const choice = dirs[Math.floor(Math.random() * dirs.length)];
+    const tx = this.x + choice.dx;
+    const ty = this.y + choice.dy;
+    if (map.inBounds(tx, ty)) {
+      const tile = map.getTile(tx, ty);
+      if (tile?.isWalkable && tile.type !== "player") {
+        this.x = tx;
+        this.y = ty;
+      }
+    }
+    this.pauseTimer = Math.floor(Math.random() * 40) + 20;
+  }
+  dropLoot(map, timedDrops) {
+    const type = Math.random() < 0.5 ? "heart" : "rupee";
+    map.setTile(this.x, this.y, TileTypes[type.toUpperCase()]());
+    timedDrops.push({ x: this.x, y: this.y, type, spawnTime: Date.now() });
+  }
+}
+import { setPlayerStatus } from "../utils/HUDOverlay.js";
+import TileTypes from "../constants/TileTypes.js";
+window.playerStatus = window.playerStatus || {
+  health: 10,
+  maxHealth: 10,
+  keys: 0,
+  rupees: 0,
+  equipped: [null, null]
+};
+export default class Player {
+  constructor(startX, startY, symbol = "@") {
+    this.x = startX;
+    this.y = startY;
+    this.symbol = symbol;
+    this.cooldown = 0;
+    this.pathQueue = [];
+    this.pendingAction = null;
+    this.inventory = {};
+    this.lastDamageTime = 0;
+  }
+  update(keys, mapWidth, mapHeight, map, timedDrops) {
+    if (this.cooldown > 0) {
+      this.cooldown--;
+      return;
+    }
+    if (this.pendingAction) {
+      const dx = Math.abs(this.x - this.pendingAction.target.x);
+      const dy = Math.abs(this.y - this.pendingAction.target.y);
+      if ((dx + dy) === 1) {
+        this.pendingAction.execute();
+        this.pendingAction = null;
+      }
+    }
+    if (this.pathQueue.length === 0) {
+      let newX = this.x;
+      let newY = this.y;
+      if (keys["w"]) newY--;
+      if (keys["s"]) newY++;
+      if (keys["a"]) newX--;
+      if (keys["d"]) newX++;
+      const tile = map.inBounds(newX, newY) ? map.getTile(newX, newY) : null;
+      if (tile?.isWalkable && !(tile.isDoor && tile.locked)) {
+        this.x = newX;
+        this.y = newY;
+        this.cooldown = 5;
+      }
+    } else {
+      const step = this.pathQueue.shift();
+      if (step) {
+        this.x = step.x;
+        this.y = step.y;
+        this.cooldown = 5;
+      }
+    }
+    const currentTile = map.getTile(this.x, this.y);
+    const now = Date.now();
+    if (currentTile?.type === "heart") {
+      if (window.playerStatus.health < window.playerStatus.maxHealth) {
+        window.playerStatus.health++;
+        setPlayerStatus({ health: window.playerStatus.health });
+      }
+      map.setTile(this.x, this.y, TileTypes.FLOOR());
+      const i = timedDrops.findIndex(t => t.x === this.x && t.y === this.y);
+      if (i !== -1) timedDrops.splice(i, 1);
+    }
+    if (currentTile?.type === "rupee") {
+      window.playerStatus.rupees++;
+      setPlayerStatus({ rupees: window.playerStatus.rupees });
+      map.setTile(this.x, this.y, TileTypes.FLOOR());
+      const i = timedDrops.findIndex(t => t.x === this.x && t.y === this.y);
+      if (i !== -1) timedDrops.splice(i, 1);
+    }
+    if (currentTile?.type === "enemy") {
+      if (now - this.lastDamageTime > 2000 && window.playerStatus.health > 0) {
+        window.playerStatus.health--;
+        setPlayerStatus({ health: window.playerStatus.health });
+        this.lastDamageTime = now;
+      }
+    }
+  }
+}
+// addSealedTestRoom.js - Adds a doorless building for pathfinding tests
+import TileTypes from "../constants/TileTypes.js";
+export default function addSealedTestRoom(map) {
+  const startX = 50;
+  const startY = 10;
+  const width = 5;
+  const height = 4;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const tileX = startX + x;
+      const tileY = startY + y;
+      const isEdge = y === 0 || y === height - 1 || x === 0 || x === width - 1;
+      if (isEdge) {
+        map.setTile(tileX, tileY, TileTypes.WALL());
+      } else {
+        map.setTile(tileX, tileY, TileTypes.GRASS());
+      }
+    }
+  }
+}
+import TileTypes from "../constants/TileTypes.js";
+export default function generateArea_areaa3(map) {
+  for (let y = 0; y < map.rows; y++) {
+    for (let x = 0; x < map.cols; x++) {
+      map.setTile(x, y, TileTypes.GRASS());
+    }
+  }
+  // Add something decorative if you’d like - maybe a flower patch, a stone path, or an NPC
+}
+import TileTypes from "../constants/TileTypes.js";
+import NPC from "../entities/NPC.js";
+function createRoamerEnclosure(map, startX, startY, width, height, entranceDir = "south") {
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const tx = startX + x;
+      const ty = startY + y;
+      const isEdge = y === 0 || y === height - 1 || x === 0 || x === width - 1;
+      if (isEdge) {
+        const isEntrance =
+          entranceDir === "south" && y === height - 1 && x === Math.floor(width / 2);
+        map.setTile(tx, ty, isEntrance ? TileTypes.PATH() : TileTypes.WALL());
+      } else {
+        map.setTile(tx, ty, TileTypes.FLOOR());
+      }
+    }
+  }
+}
+export default function generateArea_Z99(map) {
+  for (let y = 0; y < map.rows; y++) {
+    for (let x = 0; x < map.cols; x++) {
+      map.setTile(x, y, TileTypes.GRASS());
+    }
+  }
+  // Central river + path
+  const midY = Math.floor(map.rows / 2);
+  for (let y = 5; y < map.rows - 5; y++) {
+    map.setTile(Math.floor(map.cols / 2), y, TileTypes.RIVER());
+  }
+  for (let x = 3; x < map.cols - 3; x++) {
+    map.setTile(x, midY, TileTypes.PATH());
+  }
+  // Shop and structure
+  const shopX = 25;
+  const shopY = 10;
+  const shopWidth = 5;
+  const shopHeight = 4;
+  for (let y = 0; y < shopHeight; y++) {
+    for (let x = 0; x < shopWidth; x++) {
+      const tx = shopX + x;
+      const ty = shopY + y;
+      if (y === 0 || y === shopHeight - 1 || x === 0 || x === shopWidth - 1) {
+        if (y === Math.floor(shopHeight / 2) && x === 0) {
+          map.setTile(tx, ty, TileTypes.DOOR());
+        } else {
+          map.setTile(tx, ty, TileTypes.WALL());
+        }
+      } else {
+        map.setTile(tx, ty, TileTypes.FLOOR());
+      }
+    }
+  }
+  map.setTile(shopX + 2, shopY + 2, TileTypes.NPC());
+  map.setTile(shopX - 2, shopY + 2, TileTypes.KEY());
+  // ????? Static enemy NPCs (formerly tile-based)
+  const staticEnemies = [0, 2, 4, 6, 8].map(offset => {
+    return new NPC(shopX + offset, shopY - 2, "enemy", "!", "#f00", 0);
+  });
+  // ?? Roaming enclosure with moving NPCs
+  const enclosureX = shopX - 7;
+  const enclosureY = shopY + shopHeight + 2;
+  createRoamerEnclosure(map, enclosureX, enclosureY, 12, 8);
+  const roaming1 = new NPC(enclosureX + 3, enclosureY + 3, "enemy", "!", "#f00", 5);
+  const roaming2 = new NPC(enclosureX + 7, enclosureY + 4, "enemy", "!", "#f00", 5);
+  return [...staticEnemies, roaming1, roaming2];
+}
+// MapArea.js - Generates and manages the game world grid and rendering logic
+import TileTypes from "../constants/TileTypes.js";
+export default class MapArea {
+  constructor(cols, rows) {
+    this.cols = cols;
+    this.rows = rows;
+    this.grid = this.createBlankGrid();
+  }
+  createBlankGrid() {
+    const grid = [];
+    for (let y = 0; y < this.rows; y++) {
+      const row = [];
+      for (let x = 0; x < this.cols; x++) {
+        row.push(TileTypes.GRASS());
+      }
+      grid.push(row);
+    }
+    return grid;
+  }
+  setTile(x, y, tile) {
+    if (this.inBounds(x, y)) {
+      this.grid[y][x] = tile;
+    }
+  }
+  getTile(x, y) {
+    return this.inBounds(x, y) ? this.grid[y][x] : null;
+  }
+  inBounds(x, y) {
+    return y >= 0 && y < this.rows && x >= 0 && x < this.cols;
+  }
+  draw(ctx, tileSize, playerX, playerY, playerSymbol) {
+    ctx.clearRect(0, 0, this.cols * tileSize, this.rows * tileSize);
+    ctx.font = `${tileSize - 4}px Consolas, monospace`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    for (let y = 0; y < this.rows; y++) {
+      for (let x = 0; x < this.cols; x++) {
+        let tile = this.grid[y][x];
+        let char = tile.symbol;
+        let color = tile.color;
+        if (x === playerX && y === playerY) {
+          char = playerSymbol;
+          color = "#fff";
+        }
+        ctx.fillStyle = color;
+        ctx.fillText(char, x * tileSize, y * tileSize);
+      }
+    }
+  }
+}
+export default class Tile {
+  constructor(symbol, color, type, options = {}) {
+    this.symbol = symbol;
+    this.color = color;
+    this.type = type; // e.g., "grass", "wall", "river"
+    this.isDoor = options.isDoor || false;
+    this.interiorID = options.interiorID || null;
+    this.isWalkable = options.isWalkable !== undefined ? options.isWalkable : true;
+    this.locked = options.locked || false;
+  }
+  unlock() {
+    if (this.isDoor && this.locked) {
+      this.locked = false;
+    }
+  }
+}
+import generateArea_Z99 from "../maps/area_Z99.js";
+import generateArea_areaa3 from "../maps/area_areaa3.js";
+export function teleportTo(areaCode, map, player, activeNPCs, setAreaID) {
+  const midX = Math.floor(map.cols / 2);
+  const midY = Math.floor(map.rows / 2);
+  activeNPCs.length = 0;
+  switch (areaCode.toLowerCase()) {
+    case "z99":
+      generateArea_Z99(map);
+      setAreaID("z99");
+      break;
+    case "areaa3":
+      generateArea_areaa3(map);
+      setAreaID("a3");
+      break;
+    default:
+      console.log("Unknown area:", areaCode);
+      return;
+  }
+  player.x = midX;
+  player.y = midY;
+}
+import { drawErrorMessage } from "./ErrorMessageOverlay.js";
+import TileTypes from "../constants/TileTypes.js";
+export function createShopMenu(player, tileX, tileY, menu, documentBody, onInventoryUpdate, map) {
+  console.log("?? Shop menu created at:", tileX, tileY);
+  addBarter(menu, "Buy Heart (2 Rupees)", "rupees", 2, "heart", onInventoryUpdate, player, map);
+  addBarter(menu, "Sell Grass (3 for 1 Rupee)", "grass", 3, "rupees", onInventoryUpdate, player, map);
+}
+function addBarter(menu, label, costKey, costAmt, rewardKey, onInventoryUpdate, player, map) {
+  console.log("??? Creating trade option:", label);
+  const option = document.createElement("div");
+  option.textContent = label;
+  option.style.cursor = "pointer";
+  option.style.marginBottom = "4px";
+  option.onclick = () => {
+    const canvas = document.querySelector("canvas");
+    console.log("??? Trade clicked:", label);
+    const status = window.playerStatus || {};
+    console.log("?? HUD at click time:", JSON.stringify(status));
+    // Cost check and deduction
+    if (costKey === "grass") {
+      const inv = player.inventory || {};
+      if (!inv.grass || inv.grass.count < costAmt) {
+        drawErrorMessage(null, canvas, "Not enough grass!");
+        console.log("? Insufficient grass");
+        return;
+      }
+      inv.grass.count -= costAmt;
+      if (inv.grass.count <= 0) delete inv.grass;
+      console.log("?? Grass deducted. Remaining:", inv.grass?.count || 0);
+    } else {
+      const available = status[costKey] || 0;
+      if (available < costAmt) {
+        drawErrorMessage(null, canvas, "Not enough rupees!");
+        console.log(`? Not enough ${costKey}: need ${costAmt}, have ${available}`);
+        return;
+      }
+      status[costKey] -= costAmt;
+      console.log(`?? Deducted ${costAmt} ${costKey}. Remaining:`, status[costKey]);
+    }
+    // Reward
+    let rewardTile = null;
+    if (rewardKey === "heart") {
+      rewardTile = TileTypes.HEART();
+      console.log("?? Dropping heart tile:", rewardTile);
+    } else if (rewardKey === "rupees") {
+      rewardTile = TileTypes.RUPEE();
+      console.log("?? Dropping rupee tile:", rewardTile);
+    }
+    if (rewardTile) {
+      map.setTile(player.x, player.y, rewardTile);
+      console.log("?? Reward tile placed at:", player.x, player.y);
+    } else {
+      console.log("?? No tile created for rewardKey:", rewardKey);
+    }
+    if (onInventoryUpdate) onInventoryUpdate();
+    menu.remove();
+    document.body.contextMenuOpen = false;
+    console.log("? Trade complete:", label);
+  };
+  menu.appendChild(option);
+}
+import generateArea_Z99 from "../maps/area_Z99.js";
+import generateArea_areaa3 from "../maps/area_areaa3.js";
+export function ensureConsoleExists() {
+  let input = document.getElementById("devConsole");
+  if (!input) {
+    input = document.createElement("input");
+    input.id = "devConsole";
+    input.type = "text";
+    input.autocomplete = "off";
+    input.placeholder = "Enter dev command...";
+    Object.assign(input.style, {
+      position: "absolute",
+      top: "10px",
+      left: "50%",
+      transform: "translateX(-50%)",
+      width: "300px",
+      fontSize: "16px",
+      fontFamily: "monospace",
+      padding: "4px 8px",
+      background: "black",
+      color: "lime",
+      border: "1px solid lime",
+      display: "block",
+      zIndex: "9999"
+    });
+    document.body.appendChild(input);
+  } else {
+    input.style.display = "block";
+  }
+  return input;
+}
+export function handleConsoleInput(event, map, player, activeNPCs, setAreaID) {
+  const input = document.getElementById("devConsole");
+  if (!input || input.style.display !== "block") return;
+  if (event.key === "Enter") {
+    const [cmd, arg] = input.value.trim().split(" ");
+    if (cmd === "tp" && arg === "z99") {
+      generateArea_Z99(map);
+      setAreaID("z99");
+      activeNPCs.length = 0;
+      player.x = Math.floor(map.cols / 2);
+      player.y = Math.floor(map.rows / 2);
+    } else if (cmd === "tp" && arg === "areaa3") {
+      generateArea_areaa3(map);
+      setAreaID("a3");
+      activeNPCs.length = 0;
+      player.x = Math.floor(map.cols / 2);
+      player.y = Math.floor(map.rows / 2);
+    } else {
+      console.log("Unknown command:", input.value);
+    }
+    input.style.display = "none";
+    input.value = "";
+  } else if (event.key === "Escape") {
+    input.style.display = "none";
+    input.value = "";
+  }
+}
+export function toggleConsoleVisibility() {
+  const input = ensureConsoleExists();
+  input.style.display = input.style.display === "none" ? "block" : "none";
+  if (input.style.display === "block") {
+    input.focus();
+  } else {
+    input.value = "";
+  }
+}
+import { createShopMenu } from "./BarterSystem.js";
+import { showErrorMessage } from "./ErrorMessageOverlay.js";
+import { setPlayerStatus } from "./HUDOverlay.js";
+import TileTypes from "../constants/TileTypes.js";
+let playerStatus = window.playerStatus || {
+  health: 10,
+  maxHealth: 10,
+  keys: 0,
+  rupees: 0
+};
+export function createContextMenu(e, tile, player, map, camera, rootElement, onInventoryUpdate, tileX, tileY) {
+  e.preventDefault();
+  const dx = Math.abs(player.x - tileX);
+  const dy = Math.abs(player.y - tileY);
+  if (Math.max(dx, dy) > 1) {
+    showErrorMessage("Too far away to interact");
+    return;
+  }
+  document.querySelectorAll(".context-menu").forEach(m => m.remove());
+  rootElement.contextMenuOpen = false;
+  const menu = document.createElement("div");
+  menu.classList.add("context-menu");
+  Object.assign(menu.style, {
+    position: "absolute",
+    top: `${e.clientY}px`,
+    left: `${e.clientX}px`,
+    padding: "8px",
+    background: "#222",
+    border: "1px solid #555",
+    color: "#fff",
+    fontFamily: "monospace",
+    cursor: "pointer",
+    zIndex: "1000"
+  });
+  const label = document.createElement("div");
+  label.textContent = `Interact with ${tile.type}`;
+  label.style.marginBottom = "6px";
+  menu.appendChild(label);
+  function closeMenu() {
+    if (menu.parentNode) menu.parentNode.removeChild(menu);
+    document.body.contextMenuOpen = false;
+  }
+  if (tile.type === "grass") {
+    const harvest = document.createElement("div");
+    harvest.textContent = "Harvest grass";
+    harvest.onclick = () => {
+      const id = "grass";
+      player.inventory[id] = player.inventory[id] || { symbol: tile.symbol, color: tile.color, count: 0 };
+      player.inventory[id].count++;
+      tile.symbol = ".";
+      tile.color = "#8B4513";
+      tile.type = "dirt";
+      setTimeout(() => {
+        if (tile.type === "dirt") {
+          tile.symbol = '"';
+          tile.color = "#0f0";
+          tile.type = "grass";
+        }
+      }, 30000);
+      if (onInventoryUpdate) onInventoryUpdate();
+      closeMenu();
+    };
+    menu.appendChild(harvest);
+  }
+  if (tile.type === "key") {
+    const pickup = document.createElement("div");
+    pickup.textContent = "Pick up key";
+    pickup.onclick = () => {
+      playerStatus.keys = (playerStatus.keys || 0) + 1;
+      setPlayerStatus({ keys: playerStatus.keys });
+      map.setTile(tileX, tileY, TileTypes.FLOOR());
+      closeMenu();
+    };
+    menu.appendChild(pickup);
+  }
+  if (tile.type === "rupee") {
+    const pickup = document.createElement("div");
+    pickup.textContent = "Pick up rupee";
+    pickup.onclick = () => {
+      playerStatus.rupees = (playerStatus.rupees || 0) + 1;
+      setPlayerStatus({ rupees: playerStatus.rupees });
+      map.setTile(tileX, tileY, TileTypes.FLOOR());
+      closeMenu();
+    };
+    menu.appendChild(pickup);
+  }
+  if (tile.type === "heart") {
+    const pickup = document.createElement("div");
+    pickup.textContent = "Pick up heart";
+    pickup.onclick = () => {
+      playerStatus.health = Math.min(playerStatus.health + 1, playerStatus.maxHealth || 10);
+      setPlayerStatus({ health: playerStatus.health });
+      map.setTile(tileX, tileY, TileTypes.FLOOR());
+      closeMenu();
+    };
+    menu.appendChild(pickup);
+  }
+  if (tile.type === "door" && tile.locked) {
+    if ((playerStatus.keys || 0) > 0) {
+      const unlock = document.createElement("div");
+      unlock.textContent = "Unlock";
+      unlock.onclick = () => {
+        tile.unlock();
+        tile.locked = false;
+        tile.isWalkable = true;
+        playerStatus.keys--;
+        setPlayerStatus({ keys: playerStatus.keys });
+        closeMenu();
+      };
+      menu.appendChild(unlock);
+    } else {
+      const lockedMsg = document.createElement("div");
+      lockedMsg.textContent = "Locked (need key)";
+      lockedMsg.style.color = "#f44";
+      menu.appendChild(lockedMsg);
+    }
+  }
+  if (tile.type === "npc") {
+    createShopMenu(player, tileX, tileY, menu, rootElement, onInventoryUpdate, map);
+  }
+  const cancel = document.createElement("div");
+  cancel.textContent = "Cancel";
+  cancel.onclick = () => closeMenu();
+  menu.appendChild(cancel);
+  rootElement.appendChild(menu);
+  rootElement.contextMenuOpen = true;
+  return menu;
+}
+// ErrorMessageOverlay.js - Displays temporary red warning messages (e.g. "Inaccessible")
+let errorMessage = null;
+let errorTimer = 0;
+export function showErrorMessage(text, duration = 120) {
+  errorMessage = text;
+  errorTimer = duration;
+}
+export function drawErrorMessage(ctx, canvas) {
+  if (!errorMessage || errorTimer <= 0) return;
+  ctx.font = "bold 18px monospace";
+  ctx.fillStyle = "red";
+  const textWidth = ctx.measureText(errorMessage).width;
+  ctx.fillText(errorMessage, canvas.width - textWidth - 20, 20);
+  errorTimer--;
+}
+import { ensureConsoleExists, toggleConsoleVisibility, handleConsoleInput } from "./consoleManager.js";
+import { findPath } from "./Pathfinder.js";
+import { createContextMenu } from "./ContextMenuHandler.js";
+import { updateHoveredTile } from "./HoverInspector.js";
+export function bindGlobalEvents(canvas, camera, map, player, baseTileSize, activeNPCs, setAreaID) {
+  const inputKeys = ["w", "a", "s", "d"];
+  const adjacent = [
+    { dx: 0, dy: -1 }, { dx: 0, dy: 1 },
+    { dx: -1, dy: 0 }, { dx: 1, dy: 0 },
+    { dx: -1, dy: -1 }, { dx: 1, dy: -1 },
+    { dx: -1, dy: 1 }, { dx: 1, dy: 1 }
+  ];
+  document.addEventListener("keydown", (e) => {
+    ensureConsoleExists();
+    if (e.key === "~") {
+      toggleConsoleVisibility();
+      return;
+    }
+    const key = e.key.toLowerCase();
+    if (inputKeys.includes(key)) {
+      player.pathQueue = [];
+    }
+    if (key === "m") {
+      for (const { dx, dy } of adjacent) {
+        const tx = player.x + dx;
+        const ty = player.y + dy;
+        for (let i = activeNPCs.length - 1; i >= 0; i--) {
+          const npc = activeNPCs[i];
+          if (npc.x === tx && npc.y === ty && npc.type === "enemy") {
+            npc.dropLoot(map, []);
+            activeNPCs.splice(i, 1);
+            break;
+          }
+        }
+      }
+    }
+    handleConsoleInput(e, map, player, activeNPCs, setAreaID);
+  });
+  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+  canvas.addEventListener("mousemove", (e) =>
+    updateHoveredTile(e, canvas, camera, map, player, baseTileSize)
+  );
+  canvas.addEventListener("click", (e) => {
+    if (document.body.contextMenuOpen) {
+      document.querySelectorAll(".context-menu").forEach(m => m.remove());
+      document.body.contextMenuOpen = false;
+    }
+    const rect = canvas.getBoundingClientRect();
+    const clickX = Math.floor((e.clientX - rect.left) / (baseTileSize * camera.zoom)) + camera.x;
+    const clickY = Math.floor((e.clientY - rect.top) / (baseTileSize * camera.zoom)) + camera.y;
+    const path = findPath(map, player.x, player.y, clickX, clickY);
+    if (path.length > 0) {
+      player.pathQueue = path;
+    }
+  });
+  canvas.addEventListener("contextmenu", (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const tileX = Math.floor((e.clientX - rect.left) / (baseTileSize * camera.zoom)) + camera.x;
+    const tileY = Math.floor((e.clientY - rect.top) / (baseTileSize * camera.zoom)) + camera.y;
+    const tile = map.getTile(tileX, tileY);
+    if (tile) {
+      createContextMenu(e, tile, player, map, camera, document.body, () => {}, tileX, tileY);
+      document.body.contextMenuOpen = true;
+    }
+  });
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const zoomFactor = 1.1;
+    const newZoom = e.deltaY < 0 ? camera.zoom * zoomFactor : camera.zoom / zoomFactor;
+    camera.zoom = Math.max(0.5, Math.min(4, newZoom));
+  });
+}
+// GameCamera.js - Manages camera focus and screen centering
+export default class GameCamera {
+  constructor(viewCols, viewRows, mapCols, mapRows) {
+    this.viewCols = viewCols;
+    this.viewRows = viewRows;
+    this.mapCols = mapCols;
+    this.mapRows = mapRows;
+    this.x = 0;
+    this.y = 0;
+  }
+  update(px, py) {
+    this.x = px - Math.floor(this.viewCols / 2);
+    this.y = py - Math.floor(this.viewRows / 2);
+    this.x = Math.max(0, Math.min(this.x, this.mapCols - this.viewCols));
+    this.y = Math.max(0, Math.min(this.y, this.mapRows - this.viewRows));
+  }
+}
+export function gameLoop({
+  ctx,
+  canvas,
+  camera,
+  player,
+  input,
+  cols,
+  rows,
+  baseTileSize,
+  map,
+  activeNPCs,
+  timedDrops,
+  currentAreaID,
+  drawHUD,
+  drawHoverText,
+  drawInventory,
+  drawErrorMessage,
+  TileTypes
+}) {
+  function loop() {
+    camera.update(player.x, player.y);
+    player.update(input.keys, cols, rows, map, timedDrops);
+    for (const npc of activeNPCs) {
+      npc.update(player, map);
+    }
+    const now = Date.now();
+    for (let i = timedDrops.length - 1; i >= 0; i--) {
+      const drop = timedDrops[i];
+      if (now - drop.spawnTime > 10000) {
+        map.setTile(drop.x, drop.y, TileTypes.FLOOR());
+        timedDrops.splice(i, 1);
+      }
+    }
+    ctx.save();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.scale(camera.zoom, camera.zoom);
+    map.draw(ctx, baseTileSize, player.x, player.y, player.symbol, camera);
+    for (const npc of activeNPCs) {
+      ctx.fillStyle = npc.color;
+      ctx.fillText(npc.symbol, npc.x * baseTileSize, npc.y * baseTileSize);
+    }
+    ctx.restore();
+    ctx.fillStyle = "black";
+    ctx.fillRect(0, 0, canvas.width, 50);
+    drawHUD(ctx, canvas, currentAreaID);
+    drawHoverText(ctx);
+    drawInventory(ctx, canvas, player.inventory);
+    drawErrorMessage(ctx, canvas);
+    requestAnimationFrame(loop);
+  }
+  loop();
+}
+// HoverInspector.js - Tracks and renders hover descriptions for tiles
+let hoveredTileText = "";
+export function updateHoveredTile(e, canvas, camera, map, player, tileSize) {
+  const rect = canvas.getBoundingClientRect();
+  const hoverX = Math.floor((e.clientX - rect.left) / tileSize) + camera.x;
+  const hoverY = Math.floor((e.clientY - rect.top) / tileSize) + camera.y;
+  const tile = map.getTile(hoverX, hoverY);
+  hoveredTileText = hoverX === player.x && hoverY === player.y
+    ? "Player"
+    : tile?.description || tile?.type || "Unknown Tile";
+}
+export function drawHoverText(ctx) {
+  if (!hoveredTileText) return;
+  ctx.font = "bold 18px monospace";
+  const textWidth = ctx.measureText(hoveredTileText).width;
+  const padding = 12;
+  const bgWidth = textWidth + padding * 2;
+  const bgHeight = 28;
+  ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
+  ctx.fillRect(0, 0, bgWidth, bgHeight);
+  ctx.fillStyle = "white";
+  ctx.fillText(hoveredTileText, padding, 20);
+}
+let playerStatus = {
+  health: 10,
+  maxHealth: 10,
+  keys: 0,
+  rupees: 0,
+  equipped: [null, null]
+};
+window.playerStatus = playerStatus;
+export function drawHUD(ctx, canvas, currentAreaID = "z99") {
+  const tileSize = 20;
+  ctx.save();
+  ctx.font = "18px monospace";
+  ctx.textBaseline = "top";
+  const hoveredText = window.hoveredTileText || "-";
+  ctx.fillStyle = "white";
+  ctx.fillText(`Tile: ${hoveredText} | Area: ${currentAreaID}`, 20, 8);
+  const heartSpacing = 24;
+  let startX = 20;
+  let y = 32;
+  for (let i = 0; i < playerStatus.maxHealth; i++) {
+    ctx.fillStyle = i < playerStatus.health ? "red" : "#444";
+    ctx.fillText("?", startX + i * heartSpacing, y);
+  }
+  const offsetX = startX + heartSpacing * playerStatus.maxHealth + 20;
+  ctx.fillStyle = "yellow";
+  ctx.fillText("?? x" + String(playerStatus.keys).padStart(2, "0"), offsetX, y);
+  ctx.fillStyle = "#0ff";
+  ctx.fillText("?? x" + String(playerStatus.rupees).padStart(3, "0"), offsetX + 100, y);
+  ctx.restore();
+}
+export function setPlayerStatus(status) {
+  playerStatus = { ...playerStatus, ...status };
+  window.playerStatus = playerStatus;
+}
+window.addEventListener("keydown", (e) => {
+  const key = e.key.toLowerCase();
+  if (["w", "a", "s", "d"].includes(key)) {
+    player.pathQueue = [];
+    // Your existing WASD movement logic follows
+  }
+});
+// InputHandler.js - Tracks keyboard input states for real-time control
+export default class InputHandler {
+  constructor() {
+    this.keys = {};
+    window.addEventListener("keydown", (e) => {
+      this.keys[e.key.toLowerCase()] = true;
+    });
+    window.addEventListener("keyup", (e) => {
+      this.keys[e.key.toLowerCase()] = false;
+    });
+  }
+  isPressed(key) {
+    return this.keys[key.toLowerCase()] || false;
+  }
+}
+// InventoryRenderer.js - Handles toggling and rendering of the inventory UI
+let inventoryVisible = false;
+export function toggleInventory() {
+  inventoryVisible = !inventoryVisible;
+}
+export function drawInventory(ctx, canvas, inventory) {
+  if (!inventoryVisible) return;
+  const width = 400;
+  const height = 300;
+  const x = (canvas.width - width) / 2;
+  const y = (canvas.height - height) / 2;
+  ctx.save();
+  ctx.fillStyle = "black";
+  ctx.fillRect(x, y, width, height);
+  ctx.strokeStyle = "white";
+  ctx.strokeRect(x, y, width, height);
+  ctx.font = "18px monospace";
+  ctx.textBaseline = "top";
+  let line = 0;
+  for (const item of Object.values(inventory)) {
+    ctx.fillStyle = item.color || "#fff";
+    ctx.fillText(item.symbol || "?", x + 20, y + 20 + line * 24);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(` x${item.count.toString().padStart(3, "0")}`, x + 60, y + 20 + line * 24);
+    line++;
+  }
+  ctx.restore();
+}
+// InventoryUtils.js - Helper functions for managing player inventory
+export function decrementInventoryItem(inventory, id, amount = 1) {
+  if (!inventory[id]) return;
+  inventory[id].count -= amount;
+  if (inventory[id].count <= 0) {
+    delete inventory[id];
+  }
+}
+// Pathfinder.js - Enhanced with diagonal moves + corner blocking rule
+export function findPath(map, startX, startY, endX, endY) {
+  const queue = [{ x: startX, y: startY, path: [] }];
+  const visited = new Set();
+  function key(x, y) {
+    return `${x},${y}`;
+  }
+  visited.add(key(startX, startY));
+  const directions = [
+    { dx: 0, dy: -1 },
+    { dx: 0, dy: 1 },
+    { dx: -1, dy: 0 },
+    { dx: 1, dy: 0 },
+    { dx: -1, dy: -1 },
+    { dx: 1, dy: -1 },
+    { dx: -1, dy: 1 },
+    { dx: 1, dy: 1 }
+  ];
+  while (queue.length > 0) {
+    const { x, y, path } = queue.shift();
+    if (x === endX && y === endY) return path;
+    for (let { dx, dy } of directions) {
+      const nx = x + dx;
+      const ny = y + dy;
+      const tile = map.getTile(nx, ny);
+      const isDiagonal = dx !== 0 && dy !== 0;
+      const cornerClear =
+        !isDiagonal ||
+        (map.getTile(x + dx, y)?.isWalkable &&
+         map.getTile(x, y + dy)?.isWalkable);
+      const isAccessible =
+        tile?.isWalkable &&
+        (!tile.isDoor || tile.locked === false) &&
+        cornerClear;
+      if (map.inBounds(nx, ny) && isAccessible && !visited.has(key(nx, ny))) {
+        visited.add(key(nx, ny));
+        queue.push({ x: nx, y: ny, path: [...path, { x: nx, y: ny }] });
+      }
+    }
+  }
+  return [];
+}
+/* style.css - Basic layout styling for ASCII canvas rendering */
+body {
+  margin: 0;
+  background-color: black;
+  overflow: hidden;
+}
+canvas {
+  display: block;
+  background-color: black;
+  position: relative;
+  z-index: 1;
+}
+#devConsole {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 300px;
+  font-size: 16px;
+  font-family: monospace;
+  padding: 4px 8px;
+  background: black;
+  color: lime;
+  border: 1px solid lime;
+  display: none;
+  z-index: 10;
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>ASCII Game</title>
+  <link rel="stylesheet" href="public/style.css" />
+  <style>
+    #devConsole {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 300px;
+      font-size: 16px;
+      font-family: monospace;
+      padding: 4px 8px;
+      background: black;
+      color: lime;
+      border: 1px solid lime;
+      display: none;
+      z-index: 9999;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="asciiCanvas" width="1000" height="800"></canvas>
+  <input id="devConsole" type="text" autocomplete="off" />
+  <script type="module" src="assets/main.js"></script>
+</body>
+</html>
+import MapArea from "./maps/MapArea.js";
+import Player from "./entities/Player.js";
+import NPC from "./entities/NPC.js";
+import InputHandler from "./utils/InputHandler.js";
+import GameCamera from "./utils/GameCamera.js";
+import { drawHUD, setPlayerStatus } from "./utils/HUDOverlay.js";
+import { drawInventory } from "./utils/InventoryRenderer.js";
+import { drawHoverText } from "./utils/HoverInspector.js";
+import { drawErrorMessage } from "./utils/ErrorMessageOverlay.js";
+import TileTypes from "./constants/TileTypes.js";
+import { bindGlobalEvents } from "./utils/eventBindings.js";
+import { ensureConsoleExists } from "./utils/consoleManager.js";
+import { gameLoop } from "./utils/gameLoop.js";
+import generateArea_Z99 from "./maps/area_Z99.js";
+const canvas = document.getElementById("asciiCanvas");
+const ctx = canvas.getContext("2d");
+const baseTileSize = 20;
+const cols = 80;
+const rows = 60;
+canvas.width = cols * baseTileSize;
+canvas.height = rows * baseTileSize;
+const camera = new GameCamera(
+  Math.floor(canvas.width / baseTileSize),
+  Math.floor(canvas.height / baseTileSize),
+  cols,
+  rows
+);
+camera.zoom = 1;
+const map = new MapArea(cols, rows);
+generateArea_Z99(map);
+let currentAreaID = "z99";
+const player = new Player(Math.floor(cols / 2), Math.floor(rows / 2));
+player.inventory = {};
+const input = new InputHandler();
+const timedDrops = [];
+const activeNPCs = [
+  new NPC(32, 12, "enemy", "!", "#f00", 5),
+  new NPC(35, 14, "enemy", "!", "#f00", 5),
+  new NPC(25, 15, "villager", "v", "#fff", 3)
+];
+// ? Ensure dev console is always present
+ensureConsoleExists();
+// ?? Bind events
+bindGlobalEvents(canvas, camera, map, player, baseTileSize, activeNPCs, (id) => {
+  currentAreaID = id;
+});
+// ?? Start game loop
+gameLoop({
+  ctx,
+  canvas,
+  camera,
+  player,
+  input,
+  cols,
+  rows,
+  baseTileSize,
+  map,
+  activeNPCs,
+  timedDrops,
+  currentAreaID,
+  drawHUD,
+  drawHoverText,
+  drawInventory,
+  drawErrorMessage,
+  TileTypes
+});
+// TileTypes.js - Updated: ENEMY tile now walkable for damage & interaction
+import Tile from "../tiles/Tile.js";
+const TileTypes = {
+  GRASS: () => new Tile('"', "#0f0", "grass", { isWalkable: true }),
+  PATH: () => new Tile(".", "#d2b48c", "path", { isWalkable: true }),
+  RIVER: () => new Tile("~", "#00f", "river", { isWalkable: false }),
+  WALL: () => new Tile("#", "#aaa", "wall", { isWalkable: false }),
+  FLOOR: () => new Tile(".", "#b87333", "floor", { isWalkable: true }),
+  DOOR: () => new Tile("+", "#b5651d", "door", { isDoor: true, locked: true, isWalkable: false }),
+  UNLOCKED_DOOR: () => new Tile("+", "#b5651d", "door", { isDoor: true, locked: false, isWalkable: true }),
+  NPC: () => new Tile("?", "#fff", "npc", { isWalkable: false }),
+  KEY: () => new Tile("k", "#ff0", "key", { isWalkable: true }),
+  RUPEE: () => new Tile("?", "#0ff", "rupee", { isWalkable: true }),
+  HEART: () => new Tile("?", "#f00", "heart", { isWalkable: true }),
+  ENEMY: () => new Tile("!", "#f00", "enemy", { isWalkable: true })  // Now allows clipping
+};
+export default TileTypes;
+import { setPlayerStatus } from "../utils/HUDOverlay.js";
+import TileTypes from "../constants/TileTypes.js";
+export default class NPC {
+  constructor(x, y, type = "villager", symbol = "!", color = "#fff", range = 0) {
+    this.x = x;
+    this.y = y;
+    this.type = type;
+    this.symbol = symbol;
+    this.color = color;
+    this.range = range;
+    this.cooldown = 0;
+    this.pauseTimer = 0;
+    this.lastDamage = 0;
+  }
+  update(player, map) {
+    const dx = player.x - this.x;
+    const dy = player.y - this.y;
+    const distSq = dx * dx + dy * dy;
+    const detectionRadius = 3;
+    if (this.cooldown > 0) {
+      this.cooldown--;
+      return;
+    }
+    if (this.type === "enemy") {
+      if (distSq <= detectionRadius * detectionRadius) {
+        this.moveToward(player.x, player.y, map);
+      } else {
+        this.wander(map);
+      }
+      if (dx === 0 && dy === 0) {
+        const now = Date.now();
+        if (now - this.lastDamage > 2000 && playerStatus.health > 0) {
+          playerStatus.health--;
+          setPlayerStatus({ health: playerStatus.health });
+          this.lastDamage = now;
+        }
+      }
+    } else if (this.type === "villager") {
+      this.wander(map);
+    }
+    this.cooldown = 10;
+  }
+  moveToward(targetX, targetY, map) {
+    const dx = targetX - this.x;
+    const dy = targetY - this.y;
+    const stepX = Math.sign(dx);
+    const stepY = Math.sign(dy);
+    const directions = [
+      { x: this.x + stepX, y: this.y + stepY },
+      { x: this.x + stepX, y: this.y },
+      { x: this.x, y: this.y + stepY }
+    ];
+    for (const pos of directions) {
+      if (!map.inBounds(pos.x, pos.y)) continue;
+      const tile = map.getTile(pos.x, pos.y);
+      if (tile?.isWalkable && tile.type !== "player") {
+        this.x = pos.x;
+        this.y = pos.y;
+        break;
+      }
+    }
+  }
+  wander(map) {
+    if (this.pauseTimer > 0) {
+      this.pauseTimer--;
+      return;
+    }
+    const dirs = [
+      { dx: 1, dy: 0 }, { dx: -1, dy: 0 },
+      { dx: 0, dy: 1 }, { dx: 0, dy: -1 },
+      { dx: 1, dy: 1 }, { dx: -1, dy: -1 },
+      { dx: 1, dy: -1 }, { dx: -1, dy: 1 }
+    ];
+    const choice = dirs[Math.floor(Math.random() * dirs.length)];
+    const tx = this.x + choice.dx;
+    const ty = this.y + choice.dy;
+    if (map.inBounds(tx, ty)) {
+      const tile = map.getTile(tx, ty);
+      if (tile?.isWalkable && tile.type !== "player") {
+        this.x = tx;
+        this.y = ty;
+      }
+    }
+    this.pauseTimer = Math.floor(Math.random() * 40) + 20;
+  }
+  dropLoot(map, timedDrops) {
+    const type = Math.random() < 0.5 ? "heart" : "rupee";
+    map.setTile(this.x, this.y, TileTypes[type.toUpperCase()]());
+    timedDrops.push({ x: this.x, y: this.y, type, spawnTime: Date.now() });
+  }
+}
+import { setPlayerStatus } from "../utils/HUDOverlay.js";
+import TileTypes from "../constants/TileTypes.js";
+window.playerStatus = window.playerStatus || {
+  health: 10,
+  maxHealth: 10,
+  keys: 0,
+  rupees: 0,
+  equipped: [null, null]
+};
+export default class Player {
+  constructor(startX, startY, symbol = "@") {
+    this.x = startX;
+    this.y = startY;
+    this.symbol = symbol;
+    this.cooldown = 0;
+    this.pathQueue = [];
+    this.pendingAction = null;
+    this.inventory = {};
+    this.lastDamageTime = 0;
+  }
+  update(keys, mapWidth, mapHeight, map, timedDrops) {
+    if (this.cooldown > 0) {
+      this.cooldown--;
+      return;
+    }
+    if (this.pendingAction) {
+      const dx = Math.abs(this.x - this.pendingAction.target.x);
+      const dy = Math.abs(this.y - this.pendingAction.target.y);
+      if ((dx + dy) === 1) {
+        this.pendingAction.execute();
+        this.pendingAction = null;
+      }
+    }
+    if (this.pathQueue.length === 0) {
+      let newX = this.x;
+      let newY = this.y;
+      if (keys["w"]) newY--;
+      if (keys["s"]) newY++;
+      if (keys["a"]) newX--;
+      if (keys["d"]) newX++;
+      const tile = map.inBounds(newX, newY) ? map.getTile(newX, newY) : null;
+      if (tile?.isWalkable && !(tile.isDoor && tile.locked)) {
+        this.x = newX;
+        this.y = newY;
+        this.cooldown = 5;
+      }
+    } else {
+      const step = this.pathQueue.shift();
+      if (step) {
+        this.x = step.x;
+        this.y = step.y;
+        this.cooldown = 5;
+      }
+    }
+    const currentTile = map.getTile(this.x, this.y);
+    const now = Date.now();
+    if (currentTile?.type === "heart") {
+      if (window.playerStatus.health < window.playerStatus.maxHealth) {
+        window.playerStatus.health++;
+        setPlayerStatus({ health: window.playerStatus.health });
+      }
+      map.setTile(this.x, this.y, TileTypes.FLOOR());
+      const i = timedDrops.findIndex(t => t.x === this.x && t.y === this.y);
+      if (i !== -1) timedDrops.splice(i, 1);
+    }
+    if (currentTile?.type === "rupee") {
+      window.playerStatus.rupees++;
+      setPlayerStatus({ rupees: window.playerStatus.rupees });
+      map.setTile(this.x, this.y, TileTypes.FLOOR());
+      const i = timedDrops.findIndex(t => t.x === this.x && t.y === this.y);
+      if (i !== -1) timedDrops.splice(i, 1);
+    }
+    if (currentTile?.type === "enemy") {
+      if (now - this.lastDamageTime > 2000 && window.playerStatus.health > 0) {
+        window.playerStatus.health--;
+        setPlayerStatus({ health: window.playerStatus.health });
+        this.lastDamageTime = now;
+      }
+    }
+  }
+}
+// addSealedTestRoom.js - Adds a doorless building for pathfinding tests
+import TileTypes from "../constants/TileTypes.js";
+export default function addSealedTestRoom(map) {
+  const startX = 50;
+  const startY = 10;
+  const width = 5;
+  const height = 4;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const tileX = startX + x;
+      const tileY = startY + y;
+      const isEdge = y === 0 || y === height - 1 || x === 0 || x === width - 1;
+      if (isEdge) {
+        map.setTile(tileX, tileY, TileTypes.WALL());
+      } else {
+        map.setTile(tileX, tileY, TileTypes.GRASS());
+      }
+    }
+  }
+}
+import TileTypes from "../constants/TileTypes.js";
+export default function generateArea_areaa3(map) {
+  for (let y = 0; y < map.rows; y++) {
+    for (let x = 0; x < map.cols; x++) {
+      map.setTile(x, y, TileTypes.GRASS());
+    }
+  }
+  // Add something decorative if you’d like - maybe a flower patch, a stone path, or an NPC
+}
+import TileTypes from "../constants/TileTypes.js";
+import NPC from "../entities/NPC.js";
+function createRoamerEnclosure(map, startX, startY, width, height, entranceDir = "south") {
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const tx = startX + x;
+      const ty = startY + y;
+      const isEdge = y === 0 || y === height - 1 || x === 0 || x === width - 1;
+      if (isEdge) {
+        const isEntrance =
+          entranceDir === "south" && y === height - 1 && x === Math.floor(width / 2);
+        map.setTile(tx, ty, isEntrance ? TileTypes.PATH() : TileTypes.WALL());
+      } else {
+        map.setTile(tx, ty, TileTypes.FLOOR());
+      }
+    }
+  }
+}
+export default function generateArea_Z99(map) {
+  for (let y = 0; y < map.rows; y++) {
+    for (let x = 0; x < map.cols; x++) {
+      map.setTile(x, y, TileTypes.GRASS());
+    }
+  }
+  // Central river + path
+  const midY = Math.floor(map.rows / 2);
+  for (let y = 5; y < map.rows - 5; y++) {
+    map.setTile(Math.floor(map.cols / 2), y, TileTypes.RIVER());
+  }
+  for (let x = 3; x < map.cols - 3; x++) {
+    map.setTile(x, midY, TileTypes.PATH());
+  }
+  // Shop and structure
+  const shopX = 25;
+  const shopY = 10;
+  const shopWidth = 5;
+  const shopHeight = 4;
+  for (let y = 0; y < shopHeight; y++) {
+    for (let x = 0; x < shopWidth; x++) {
+      const tx = shopX + x;
+      const ty = shopY + y;
+      if (y === 0 || y === shopHeight - 1 || x === 0 || x === shopWidth - 1) {
+        if (y === Math.floor(shopHeight / 2) && x === 0) {
+          map.setTile(tx, ty, TileTypes.DOOR());
+        } else {
+          map.setTile(tx, ty, TileTypes.WALL());
+        }
+      } else {
+        map.setTile(tx, ty, TileTypes.FLOOR());
+      }
+    }
+  }
+  map.setTile(shopX + 2, shopY + 2, TileTypes.NPC());
+  map.setTile(shopX - 2, shopY + 2, TileTypes.KEY());
+  // ????? Static enemy NPCs (formerly tile-based)
+  const staticEnemies = [0, 2, 4, 6, 8].map(offset => {
+    return new NPC(shopX + offset, shopY - 2, "enemy", "!", "#f00", 0);
+  });
+  // ?? Roaming enclosure with moving NPCs
+  const enclosureX = shopX - 7;
+  const enclosureY = shopY + shopHeight + 2;
+  createRoamerEnclosure(map, enclosureX, enclosureY, 12, 8);
+  const roaming1 = new NPC(enclosureX + 3, enclosureY + 3, "enemy", "!", "#f00", 5);
+  const roaming2 = new NPC(enclosureX + 7, enclosureY + 4, "enemy", "!", "#f00", 5);
+  return [...staticEnemies, roaming1, roaming2];
+}
+// MapArea.js - Generates and manages the game world grid and rendering logic
+import TileTypes from "../constants/TileTypes.js";
+export default class MapArea {
+  constructor(cols, rows) {
+    this.cols = cols;
+    this.rows = rows;
+    this.grid = this.createBlankGrid();
+  }
+  createBlankGrid() {
+    const grid = [];
+    for (let y = 0; y < this.rows; y++) {
+      const row = [];
+      for (let x = 0; x < this.cols; x++) {
+        row.push(TileTypes.GRASS());
+      }
+      grid.push(row);
+    }
+    return grid;
+  }
+  setTile(x, y, tile) {
+    if (this.inBounds(x, y)) {
+      this.grid[y][x] = tile;
+    }
+  }
+  getTile(x, y) {
+    return this.inBounds(x, y) ? this.grid[y][x] : null;
+  }
+  inBounds(x, y) {
+    return y >= 0 && y < this.rows && x >= 0 && x < this.cols;
+  }
+  draw(ctx, tileSize, playerX, playerY, playerSymbol) {
+    ctx.clearRect(0, 0, this.cols * tileSize, this.rows * tileSize);
+    ctx.font = `${tileSize - 4}px Consolas, monospace`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    for (let y = 0; y < this.rows; y++) {
+      for (let x = 0; x < this.cols; x++) {
+        let tile = this.grid[y][x];
+        let char = tile.symbol;
+        let color = tile.color;
+        if (x === playerX && y === playerY) {
+          char = playerSymbol;
+          color = "#fff";
+        }
+        ctx.fillStyle = color;
+        ctx.fillText(char, x * tileSize, y * tileSize);
+      }
+    }
+  }
+}
+export default class Tile {
+  constructor(symbol, color, type, options = {}) {
+    this.symbol = symbol;
+    this.color = color;
+    this.type = type; // e.g., "grass", "wall", "river"
+    this.isDoor = options.isDoor || false;
+    this.interiorID = options.interiorID || null;
+    this.isWalkable = options.isWalkable !== undefined ? options.isWalkable : true;
+    this.locked = options.locked || false;
+  }
+  unlock() {
+    if (this.isDoor && this.locked) {
+      this.locked = false;
+    }
+  }
+}
+import generateArea_Z99 from "../maps/area_Z99.js";
+import generateArea_areaa3 from "../maps/area_areaa3.js";
+export function teleportTo(areaCode, map, player, activeNPCs, setAreaID) {
+  const midX = Math.floor(map.cols / 2);
+  const midY = Math.floor(map.rows / 2);
+  activeNPCs.length = 0;
+  switch (areaCode.toLowerCase()) {
+    case "z99":
+      generateArea_Z99(map);
+      setAreaID("z99");
+      break;
+    case "areaa3":
+      generateArea_areaa3(map);
+      setAreaID("a3");
+      break;
+    default:
+      console.log("Unknown area:", areaCode);
+      return;
+  }
+  player.x = midX;
+  player.y = midY;
+}
+import { drawErrorMessage } from "./ErrorMessageOverlay.js";
+import TileTypes from "../constants/TileTypes.js";
+export function createShopMenu(player, tileX, tileY, menu, documentBody, onInventoryUpdate, map) {
+  console.log("?? Shop menu created at:", tileX, tileY);
+  addBarter(menu, "Buy Heart (2 Rupees)", "rupees", 2, "heart", onInventoryUpdate, player, map);
+  addBarter(menu, "Sell Grass (3 for 1 Rupee)", "grass", 3, "rupees", onInventoryUpdate, player, map);
+}
+function addBarter(menu, label, costKey, costAmt, rewardKey, onInventoryUpdate, player, map) {
+  console.log("??? Creating trade option:", label);
+  const option = document.createElement("div");
+  option.textContent = label;
+  option.style.cursor = "pointer";
+  option.style.marginBottom = "4px";
+  option.onclick = () => {
+    const canvas = document.querySelector("canvas");
+    console.log("??? Trade clicked:", label);
+    const status = window.playerStatus || {};
+    console.log("?? HUD at click time:", JSON.stringify(status));
+    // Cost check and deduction
+    if (costKey === "grass") {
+      const inv = player.inventory || {};
+      if (!inv.grass || inv.grass.count < costAmt) {
+        drawErrorMessage(null, canvas, "Not enough grass!");
+        console.log("? Insufficient grass");
+        return;
+      }
+      inv.grass.count -= costAmt;
+      if (inv.grass.count <= 0) delete inv.grass;
+      console.log("?? Grass deducted. Remaining:", inv.grass?.count || 0);
+    } else {
+      const available = status[costKey] || 0;
+      if (available < costAmt) {
+        drawErrorMessage(null, canvas, "Not enough rupees!");
+        console.log(`? Not enough ${costKey}: need ${costAmt}, have ${available}`);
+        return;
+      }
+      status[costKey] -= costAmt;
+      console.log(`?? Deducted ${costAmt} ${costKey}. Remaining:`, status[costKey]);
+    }
+    // Reward
+    let rewardTile = null;
+    if (rewardKey === "heart") {
+      rewardTile = TileTypes.HEART();
+      console.log("?? Dropping heart tile:", rewardTile);
+    } else if (rewardKey === "rupees") {
+      rewardTile = TileTypes.RUPEE();
+      console.log("?? Dropping rupee tile:", rewardTile);
+    }
+    if (rewardTile) {
+      map.setTile(player.x, player.y, rewardTile);
+      console.log("?? Reward tile placed at:", player.x, player.y);
+    } else {
+      console.log("?? No tile created for rewardKey:", rewardKey);
+    }
+    if (onInventoryUpdate) onInventoryUpdate();
+    menu.remove();
+    document.body.contextMenuOpen = false;
+    console.log("? Trade complete:", label);
+  };
+  menu.appendChild(option);
+}
+import generateArea_Z99 from "../maps/area_Z99.js";
+import generateArea_areaa3 from "../maps/area_areaa3.js";
+export function ensureConsoleExists() {
+  let input = document.getElementById("devConsole");
+  if (!input) {
+    input = document.createElement("input");
+    input.id = "devConsole";
+    input.type = "text";
+    input.autocomplete = "off";
+    input.placeholder = "Enter dev command...";
+    Object.assign(input.style, {
+      position: "absolute",
+      top: "10px",
+      left: "50%",
+      transform: "translateX(-50%)",
+      width: "300px",
+      fontSize: "16px",
+      fontFamily: "monospace",
+      padding: "4px 8px",
+      background: "black",
+      color: "lime",
+      border: "1px solid lime",
+      display: "block",
+      zIndex: "9999"
+    });
+    document.body.appendChild(input);
+  } else {
+    input.style.display = "block";
+  }
+  return input;
+}
+export function handleConsoleInput(event, map, player, activeNPCs, setAreaID) {
+  const input = document.getElementById("devConsole");
+  if (!input || input.style.display !== "block") return;
+  if (event.key === "Enter") {
+    const [cmd, arg] = input.value.trim().split(" ");
+    if (cmd === "tp" && arg === "z99") {
+      generateArea_Z99(map);
+      setAreaID("z99");
+      activeNPCs.length = 0;
+      player.x = Math.floor(map.cols / 2);
+      player.y = Math.floor(map.rows / 2);
+    } else if (cmd === "tp" && arg === "areaa3") {
+      generateArea_areaa3(map);
+      setAreaID("a3");
+      activeNPCs.length = 0;
+      player.x = Math.floor(map.cols / 2);
+      player.y = Math.floor(map.rows / 2);
+    } else {
+      console.log("Unknown command:", input.value);
+    }
+    input.style.display = "none";
+    input.value = "";
+  } else if (event.key === "Escape") {
+    input.style.display = "none";
+    input.value = "";
+  }
+}
+export function toggleConsoleVisibility() {
+  const input = ensureConsoleExists();
+  input.style.display = input.style.display === "none" ? "block" : "none";
+  if (input.style.display === "block") {
+    input.focus();
+  } else {
+    input.value = "";
+  }
+}
+import { createShopMenu } from "./BarterSystem.js";
+import { showErrorMessage } from "./ErrorMessageOverlay.js";
+import { setPlayerStatus } from "./HUDOverlay.js";
+import TileTypes from "../constants/TileTypes.js";
+let playerStatus = window.playerStatus || {
+  health: 10,
+  maxHealth: 10,
+  keys: 0,
+  rupees: 0
+};
+export function createContextMenu(e, tile, player, map, camera, rootElement, onInventoryUpdate, tileX, tileY) {
+  e.preventDefault();
+  const dx = Math.abs(player.x - tileX);
+  const dy = Math.abs(player.y - tileY);
+  if (Math.max(dx, dy) > 1) {
+    showErrorMessage("Too far away to interact");
+    return;
+  }
+  document.querySelectorAll(".context-menu").forEach(m => m.remove());
+  rootElement.contextMenuOpen = false;
+  const menu = document.createElement("div");
+  menu.classList.add("context-menu");
+  Object.assign(menu.style, {
+    position: "absolute",
+    top: `${e.clientY}px`,
+    left: `${e.clientX}px`,
+    padding: "8px",
+    background: "#222",
+    border: "1px solid #555",
+    color: "#fff",
+    fontFamily: "monospace",
+    cursor: "pointer",
+    zIndex: "1000"
+  });
+  const label = document.createElement("div");
+  label.textContent = `Interact with ${tile.type}`;
+  label.style.marginBottom = "6px";
+  menu.appendChild(label);
+  function closeMenu() {
+    if (menu.parentNode) menu.parentNode.removeChild(menu);
+    document.body.contextMenuOpen = false;
+  }
+  if (tile.type === "grass") {
+    const harvest = document.createElement("div");
+    harvest.textContent = "Harvest grass";
+    harvest.onclick = () => {
+      const id = "grass";
+      player.inventory[id] = player.inventory[id] || { symbol: tile.symbol, color: tile.color, count: 0 };
+      player.inventory[id].count++;
+      tile.symbol = ".";
+      tile.color = "#8B4513";
+      tile.type = "dirt";
+      setTimeout(() => {
+        if (tile.type === "dirt") {
+          tile.symbol = '"';
+          tile.color = "#0f0";
+          tile.type = "grass";
+        }
+      }, 30000);
+      if (onInventoryUpdate) onInventoryUpdate();
+      closeMenu();
+    };
+    menu.appendChild(harvest);
+  }
+  if (tile.type === "key") {
+    const pickup = document.createElement("div");
+    pickup.textContent = "Pick up key";
+    pickup.onclick = () => {
+      playerStatus.keys = (playerStatus.keys || 0) + 1;
+      setPlayerStatus({ keys: playerStatus.keys });
+      map.setTile(tileX, tileY, TileTypes.FLOOR());
+      closeMenu();
+    };
+    menu.appendChild(pickup);
+  }
+  if (tile.type === "rupee") {
+    const pickup = document.createElement("div");
+    pickup.textContent = "Pick up rupee";
+    pickup.onclick = () => {
+      playerStatus.rupees = (playerStatus.rupees || 0) + 1;
+      setPlayerStatus({ rupees: playerStatus.rupees });
+      map.setTile(tileX, tileY, TileTypes.FLOOR());
+      closeMenu();
+    };
+    menu.appendChild(pickup);
+  }
+  if (tile.type === "heart") {
+    const pickup = document.createElement("div");
+    pickup.textContent = "Pick up heart";
+    pickup.onclick = () => {
+      playerStatus.health = Math.min(playerStatus.health + 1, playerStatus.maxHealth || 10);
+      setPlayerStatus({ health: playerStatus.health });
+      map.setTile(tileX, tileY, TileTypes.FLOOR());
+      closeMenu();
+    };
+    menu.appendChild(pickup);
+  }
+  if (tile.type === "door" && tile.locked) {
+    if ((playerStatus.keys || 0) > 0) {
+      const unlock = document.createElement("div");
+      unlock.textContent = "Unlock";
+      unlock.onclick = () => {
+        tile.unlock();
+        tile.locked = false;
+        tile.isWalkable = true;
+        playerStatus.keys--;
+        setPlayerStatus({ keys: playerStatus.keys });
+        closeMenu();
+      };
+      menu.appendChild(unlock);
+    } else {
+      const lockedMsg = document.createElement("div");
+      lockedMsg.textContent = "Locked (need key)";
+      lockedMsg.style.color = "#f44";
+      menu.appendChild(lockedMsg);
+    }
+  }
+  if (tile.type === "npc") {
+    createShopMenu(player, tileX, tileY, menu, rootElement, onInventoryUpdate, map);
+  }
+  const cancel = document.createElement("div");
+  cancel.textContent = "Cancel";
+  cancel.onclick = () => closeMenu();
+  menu.appendChild(cancel);
+  rootElement.appendChild(menu);
+  rootElement.contextMenuOpen = true;
+  return menu;
+}
+// ErrorMessageOverlay.js - Displays temporary red warning messages (e.g. "Inaccessible")
+let errorMessage = null;
+let errorTimer = 0;
+export function showErrorMessage(text, duration = 120) {
+  errorMessage = text;
+  errorTimer = duration;
+}
+export function drawErrorMessage(ctx, canvas) {
+  if (!errorMessage || errorTimer <= 0) return;
+  ctx.font = "bold 18px monospace";
+  ctx.fillStyle = "red";
+  const textWidth = ctx.measureText(errorMessage).width;
+  ctx.fillText(errorMessage, canvas.width - textWidth - 20, 20);
+  errorTimer--;
+}
+import { ensureConsoleExists, toggleConsoleVisibility, handleConsoleInput } from "./consoleManager.js";
+import { findPath } from "./Pathfinder.js";
+import { createContextMenu } from "./ContextMenuHandler.js";
+import { updateHoveredTile } from "./HoverInspector.js";
+export function bindGlobalEvents(canvas, camera, map, player, baseTileSize, activeNPCs, setAreaID) {
+  const inputKeys = ["w", "a", "s", "d"];
+  const adjacent = [
+    { dx: 0, dy: -1 }, { dx: 0, dy: 1 },
+    { dx: -1, dy: 0 }, { dx: 1, dy: 0 },
+    { dx: -1, dy: -1 }, { dx: 1, dy: -1 },
+    { dx: -1, dy: 1 }, { dx: 1, dy: 1 }
+  ];
+  document.addEventListener("keydown", (e) => {
+    ensureConsoleExists();
+    if (e.key === "~") {
+      toggleConsoleVisibility();
+      return;
+    }
+    const key = e.key.toLowerCase();
+    if (inputKeys.includes(key)) {
+      player.pathQueue = [];
+    }
+    if (key === "m") {
+      for (const { dx, dy } of adjacent) {
+        const tx = player.x + dx;
+        const ty = player.y + dy;
+        for (let i = activeNPCs.length - 1; i >= 0; i--) {
+          const npc = activeNPCs[i];
+          if (npc.x === tx && npc.y === ty && npc.type === "enemy") {
+            npc.dropLoot(map, []);
+            activeNPCs.splice(i, 1);
+            break;
+          }
+        }
+      }
+    }
+    handleConsoleInput(e, map, player, activeNPCs, setAreaID);
+  });
+  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+  canvas.addEventListener("mousemove", (e) =>
+    updateHoveredTile(e, canvas, camera, map, player, baseTileSize)
+  );
+  canvas.addEventListener("click", (e) => {
+    if (document.body.contextMenuOpen) {
+      document.querySelectorAll(".context-menu").forEach(m => m.remove());
+      document.body.contextMenuOpen = false;
+    }
+    const rect = canvas.getBoundingClientRect();
+    const clickX = Math.floor((e.clientX - rect.left) / (baseTileSize * camera.zoom)) + camera.x;
+    const clickY = Math.floor((e.clientY - rect.top) / (baseTileSize * camera.zoom)) + camera.y;
+    const path = findPath(map, player.x, player.y, clickX, clickY);
+    if (path.length > 0) {
+      player.pathQueue = path;
+    }
+  });
+  canvas.addEventListener("contextmenu", (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const tileX = Math.floor((e.clientX - rect.left) / (baseTileSize * camera.zoom)) + camera.x;
+    const tileY = Math.floor((e.clientY - rect.top) / (baseTileSize * camera.zoom)) + camera.y;
+    const tile = map.getTile(tileX, tileY);
+    if (tile) {
+      createContextMenu(e, tile, player, map, camera, document.body, () => {}, tileX, tileY);
+      document.body.contextMenuOpen = true;
+    }
+  });
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const zoomFactor = 1.1;
+    const newZoom = e.deltaY < 0 ? camera.zoom * zoomFactor : camera.zoom / zoomFactor;
+    camera.zoom = Math.max(0.5, Math.min(4, newZoom));
+  });
+}
+// GameCamera.js - Manages camera focus and screen centering
+export default class GameCamera {
+  constructor(viewCols, viewRows, mapCols, mapRows) {
+    this.viewCols = viewCols;
+    this.viewRows = viewRows;
+    this.mapCols = mapCols;
+    this.mapRows = mapRows;
+    this.x = 0;
+    this.y = 0;
+  }
+  update(px, py) {
+    this.x = px - Math.floor(this.viewCols / 2);
+    this.y = py - Math.floor(this.viewRows / 2);
+    this.x = Math.max(0, Math.min(this.x, this.mapCols - this.viewCols));
+    this.y = Math.max(0, Math.min(this.y, this.mapRows - this.viewRows));
+  }
+}
+export function gameLoop({
+  ctx,
+  canvas,
+  camera,
+  player,
+  input,
+  cols,
+  rows,
+  baseTileSize,
+  map,
+  activeNPCs,
+  timedDrops,
+  currentAreaID,
+  drawHUD,
+  drawHoverText,
+  drawInventory,
+  drawErrorMessage,
+  TileTypes
+}) {
+  function loop() {
+    camera.update(player.x, player.y);
+    player.update(input.keys, cols, rows, map, timedDrops);
+    for (const npc of activeNPCs) {
+      npc.update(player, map);
+    }
+    const now = Date.now();
+    for (let i = timedDrops.length - 1; i >= 0; i--) {
+      const drop = timedDrops[i];
+      if (now - drop.spawnTime > 10000) {
+        map.setTile(drop.x, drop.y, TileTypes.FLOOR());
+        timedDrops.splice(i, 1);
+      }
+    }
+    ctx.save();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.scale(camera.zoom, camera.zoom);
+    map.draw(ctx, baseTileSize, player.x, player.y, player.symbol, camera);
+    for (const npc of activeNPCs) {
+      ctx.fillStyle = npc.color;
+      ctx.fillText(npc.symbol, npc.x * baseTileSize, npc.y * baseTileSize);
+    }
+    ctx.restore();
+    ctx.fillStyle = "black";
+    ctx.fillRect(0, 0, canvas.width, 50);
+    drawHUD(ctx, canvas, currentAreaID);
+    drawHoverText(ctx);
+    drawInventory(ctx, canvas, player.inventory);
+    drawErrorMessage(ctx, canvas);
+    requestAnimationFrame(loop);
+  }
+  loop();
+}
+// HoverInspector.js - Tracks and renders hover descriptions for tiles
+let hoveredTileText = "";
+export function updateHoveredTile(e, canvas, camera, map, player, tileSize) {
+  const rect = canvas.getBoundingClientRect();
+  const hoverX = Math.floor((e.clientX - rect.left) / tileSize) + camera.x;
+  const hoverY = Math.floor((e.clientY - rect.top) / tileSize) + camera.y;
+  const tile = map.getTile(hoverX, hoverY);
+  hoveredTileText = hoverX === player.x && hoverY === player.y
+    ? "Player"
+    : tile?.description || tile?.type || "Unknown Tile";
+}
+export function drawHoverText(ctx) {
+  if (!hoveredTileText) return;
+  ctx.font = "bold 18px monospace";
+  const textWidth = ctx.measureText(hoveredTileText).width;
+  const padding = 12;
+  const bgWidth = textWidth + padding * 2;
+  const bgHeight = 28;
+  ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
+  ctx.fillRect(0, 0, bgWidth, bgHeight);
+  ctx.fillStyle = "white";
+  ctx.fillText(hoveredTileText, padding, 20);
+}
+let playerStatus = {
+  health: 10,
+  maxHealth: 10,
+  keys: 0,
+  rupees: 0,
+  equipped: [null, null]
+};
+window.playerStatus = playerStatus;
+export function drawHUD(ctx, canvas, currentAreaID = "z99") {
+  const tileSize = 20;
+  ctx.save();
+  ctx.font = "18px monospace";
+  ctx.textBaseline = "top";
+  const hoveredText = window.hoveredTileText || "-";
+  ctx.fillStyle = "white";
+  ctx.fillText(`Tile: ${hoveredText} | Area: ${currentAreaID}`, 20, 8);
+  const heartSpacing = 24;
+  let startX = 20;
+  let y = 32;
+  for (let i = 0; i < playerStatus.maxHealth; i++) {
+    ctx.fillStyle = i < playerStatus.health ? "red" : "#444";
+    ctx.fillText("?", startX + i * heartSpacing, y);
+  }
+  const offsetX = startX + heartSpacing * playerStatus.maxHealth + 20;
+  ctx.fillStyle = "yellow";
+  ctx.fillText("?? x" + String(playerStatus.keys).padStart(2, "0"), offsetX, y);
+  ctx.fillStyle = "#0ff";
+  ctx.fillText("?? x" + String(playerStatus.rupees).padStart(3, "0"), offsetX + 100, y);
+  ctx.restore();
+}
+export function setPlayerStatus(status) {
+  playerStatus = { ...playerStatus, ...status };
+  window.playerStatus = playerStatus;
+}
+window.addEventListener("keydown", (e) => {
+  const key = e.key.toLowerCase();
+  if (["w", "a", "s", "d"].includes(key)) {
+    player.pathQueue = [];
+    // Your existing WASD movement logic follows
+  }
+});
+// InputHandler.js - Tracks keyboard input states for real-time control
+export default class InputHandler {
+  constructor() {
+    this.keys = {};
+    window.addEventListener("keydown", (e) => {
+      this.keys[e.key.toLowerCase()] = true;
+    });
+    window.addEventListener("keyup", (e) => {
+      this.keys[e.key.toLowerCase()] = false;
+    });
+  }
+  isPressed(key) {
+    return this.keys[key.toLowerCase()] || false;
+  }
+}
+// InventoryRenderer.js - Handles toggling and rendering of the inventory UI
+let inventoryVisible = false;
+export function toggleInventory() {
+  inventoryVisible = !inventoryVisible;
+}
+export function drawInventory(ctx, canvas, inventory) {
+  if (!inventoryVisible) return;
+  const width = 400;
+  const height = 300;
+  const x = (canvas.width - width) / 2;
+  const y = (canvas.height - height) / 2;
+  ctx.save();
+  ctx.fillStyle = "black";
+  ctx.fillRect(x, y, width, height);
+  ctx.strokeStyle = "white";
+  ctx.strokeRect(x, y, width, height);
+  ctx.font = "18px monospace";
+  ctx.textBaseline = "top";
+  let line = 0;
+  for (const item of Object.values(inventory)) {
+    ctx.fillStyle = item.color || "#fff";
+    ctx.fillText(item.symbol || "?", x + 20, y + 20 + line * 24);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(` x${item.count.toString().padStart(3, "0")}`, x + 60, y + 20 + line * 24);
+    line++;
+  }
+  ctx.restore();
+}
+// InventoryUtils.js - Helper functions for managing player inventory
+export function decrementInventoryItem(inventory, id, amount = 1) {
+  if (!inventory[id]) return;
+  inventory[id].count -= amount;
+  if (inventory[id].count <= 0) {
+    delete inventory[id];
+  }
+}
+// Pathfinder.js - Enhanced with diagonal moves + corner blocking rule
+export function findPath(map, startX, startY, endX, endY) {
+  const queue = [{ x: startX, y: startY, path: [] }];
+  const visited = new Set();
+  function key(x, y) {
+    return `${x},${y}`;
+  }
+  visited.add(key(startX, startY));
+  const directions = [
+    { dx: 0, dy: -1 },
+    { dx: 0, dy: 1 },
+    { dx: -1, dy: 0 },
+    { dx: 1, dy: 0 },
+    { dx: -1, dy: -1 },
+    { dx: 1, dy: -1 },
+    { dx: -1, dy: 1 },
+    { dx: 1, dy: 1 }
+  ];
+  while (queue.length > 0) {
+    const { x, y, path } = queue.shift();
+    if (x === endX && y === endY) return path;
+    for (let { dx, dy } of directions) {
+      const nx = x + dx;
+      const ny = y + dy;
+      const tile = map.getTile(nx, ny);
+      const isDiagonal = dx !== 0 && dy !== 0;
+      const cornerClear =
+        !isDiagonal ||
+        (map.getTile(x + dx, y)?.isWalkable &&
+         map.getTile(x, y + dy)?.isWalkable);
+      const isAccessible =
+        tile?.isWalkable &&
+        (!tile.isDoor || tile.locked === false) &&
+        cornerClear;
+      if (map.inBounds(nx, ny) && isAccessible && !visited.has(key(nx, ny))) {
+        visited.add(key(nx, ny));
+        queue.push({ x: nx, y: ny, path: [...path, { x: nx, y: ny }] });
+      }
+    }
+  }
+  return [];
+}
+/* style.css - Basic layout styling for ASCII canvas rendering */
+body {
+  margin: 0;
+  background-color: black;
+  overflow: hidden;
+}
+canvas {
+  display: block;
+  background-color: black;
+  position: relative;
+  z-index: 1;
+}
+#devConsole {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 300px;
+  font-size: 16px;
+  font-family: monospace;
+  padding: 4px 8px;
+  background: black;
+  color: lime;
+  border: 1px solid lime;
+  display: none;
+  z-index: 10;
+}
