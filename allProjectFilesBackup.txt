@@ -1,6 +1,28 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Text File Display</title>
+    <style>
+        body {
+            font-family: monospace;
+            background-color: #f4f4f4;
+            padding: 20px;
+        }
+        pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+    </style>
+</head>
+<body>
+    <h1>Content of allProjectFilesBackup.txt</h1>
+    <pre>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
   <meta charset="UTF-8" />
   <title>ASCII Game</title>
   <link rel="stylesheet" href="public/style.css" />
@@ -308,7 +330,7 @@ export default function generateArea_areaa3(map) {
       map.setTile(x, y, TileTypes.GRASS());
     }
   }
-  // Add something decorative if you’d like - maybe a flower patch, a stone path, or an NPC
+  // Add something decorative if youÂ’d like - maybe a flower patch, a stone path, or an NPC
 }
 import TileTypes from "../constants/TileTypes.js";
 import NPC from "../entities/NPC.js";
@@ -1372,7 +1394,7 @@ export default function generateArea_areaa3(map) {
       map.setTile(x, y, TileTypes.GRASS());
     }
   }
-  // Add something decorative if you’d like - maybe a flower patch, a stone path, or an NPC
+  // Add something decorative if youÂ’d like - maybe a flower patch, a stone path, or an NPC
 }
 import TileTypes from "../constants/TileTypes.js";
 import NPC from "../entities/NPC.js";
@@ -2124,3 +2146,8 @@ canvas {
   display: none;
   z-index: 10;
 }
+
+
+    </pre>
+</body>
+</html>
